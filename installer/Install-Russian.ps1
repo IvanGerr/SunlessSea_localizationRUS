@@ -2,7 +2,8 @@
 param(
     [string]$GamePath = 'C:\Program Files\Epic Games\SunlessSea',
     [string]$ProfilePath = '',
-    [string]$StateRoot = ''
+    [string]$StateRoot = '',
+    [switch]$AllowUnsupportedVersion
 )
 
 Set-StrictMode -Version 2.0
@@ -10,6 +11,13 @@ $ErrorActionPreference = 'Stop'
 
 function Get-Sha256([string]$Path) {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToUpperInvariant()
+}
+
+function Get-GameVersion([string]$ResourcesPath) {
+    $text = [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($ResourcesPath))
+    $match = [regex]::Match($text, '"VersionNumber"\s*:\s*"(?<version>[^"]+)"')
+    if (-not $match.Success) { return $null }
+    return $match.Groups['version'].Value + '-Windows'
 }
 
 function Convert-BytesToHex([byte[]]$Bytes) {
@@ -29,7 +37,8 @@ function Apply-Delta(
     [string]$DeltaPath,
     [string]$OutputPath,
     [string]$ExpectedBaseSha256,
-    [string]$ExpectedTargetSha256
+    [string]$ExpectedTargetSha256,
+    [switch]$AllowUnknownBase
 ) {
     $deltaFile = $null
     $gzip = $null
@@ -54,8 +63,16 @@ function Apply-Delta(
             throw "Хэши в дельте не совпадают с manifest.json: $DeltaPath"
         }
         $sourceInfo = Get-Item -LiteralPath $SourcePath
-        if ($sourceInfo.Length -ne $baseLength -or (Get-Sha256 $SourcePath) -ne $baseHash) {
+        $sourceHash = Get-Sha256 $SourcePath
+        $isExpectedBase = $sourceInfo.Length -eq $baseLength -and $sourceHash -eq $baseHash
+        if (-not $isExpectedBase -and -not $AllowUnknownBase) {
             throw "Исходный файл не соответствует поддерживаемой версии: $SourcePath"
+        }
+        if (-not $isExpectedBase) {
+            Write-Warning "Дельта применяется к непроверенному файлу: $SourcePath"
+            if ($sourceInfo.Length -ne $baseLength) {
+                Write-Warning "Размер файла отличается: найдено $($sourceInfo.Length), ожидалось $baseLength байт."
+            }
         }
 
         $source = [IO.File]::Open($SourcePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
@@ -86,9 +103,13 @@ function Apply-Delta(
 
     $actualTargetHash = Get-Sha256 $OutputPath
     if ($actualTargetHash -ne $ExpectedTargetSha256) {
-        Remove-Item -LiteralPath $OutputPath -Force -ErrorAction SilentlyContinue
-        throw "Итоговый хэш не совпал: $SourcePath"
+        if (-not $AllowUnknownBase) {
+            Remove-Item -LiteralPath $OutputPath -Force -ErrorAction SilentlyContinue
+            throw "Итоговый хэш не совпал: $SourcePath"
+        }
+        Write-Warning "Итоговый хэш отличается от проверенной сборки: $actualTargetHash"
     }
+    return $actualTargetHash
 }
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -96,6 +117,7 @@ $manifestPath = Join-Path $scriptRoot 'manifest.json'
 $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $dataPath = Join-Path ([IO.Path]::GetFullPath($GamePath)) 'Sunless Sea_Data'
 $exePath = Join-Path ([IO.Path]::GetFullPath($GamePath)) 'Sunless Sea.exe'
+$versionSourcePath = Join-Path $dataPath 'resources.assets'
 
 if ([string]::IsNullOrWhiteSpace($ProfilePath)) {
     $ProfilePath = [IO.Path]::GetFullPath((Join-Path $env:APPDATA '..\LocalLow\Failbetter Games\Sunless Sea'))
@@ -108,19 +130,67 @@ $StateRoot = [IO.Path]::GetFullPath($StateRoot)
 
 if (-not (Test-Path -LiteralPath $exePath)) { throw "Игра не найдена: $exePath" }
 if (Get-Process -Name 'Sunless Sea' -ErrorAction SilentlyContinue) { throw 'Закройте Sunless Sea перед установкой.' }
+if (-not (Test-Path -LiteralPath $versionSourcePath)) { throw "Не удалось найти файл версии игры: $versionSourcePath" }
+
+$detectedGameVersion = Get-GameVersion $versionSourcePath
+$versionMismatch = [string]::IsNullOrWhiteSpace($detectedGameVersion) -or
+    $detectedGameVersion -ne ([string]$manifest.gameVersion)
+if ($versionMismatch) {
+    $versionLabel = if ([string]::IsNullOrWhiteSpace($detectedGameVersion)) {
+        'не удалось определить'
+    }
+    else {
+        $detectedGameVersion
+    }
+
+    Write-Host ''
+    Write-Host 'ВНИМАНИЕ: версия игры отличается от проверенной.' -ForegroundColor Yellow
+    Write-Host "Найдена версия: $versionLabel" -ForegroundColor Yellow
+    Write-Host "Проверенная версия: $($manifest.gameVersion)" -ForegroundColor Yellow
+    Write-Host ''
+    Write-Host 'Продолжайте установку на свой страх и риск: игра может вылетать или перестать запускаться.' -ForegroundColor Red
+    Write-Host 'Перед изменением файлов будет создана резервная копия.' -ForegroundColor Yellow
+
+    if (-not $AllowUnsupportedVersion) {
+        $confirmation = Read-Host 'Чтобы продолжить, введите ДА. Для отмены нажмите Enter'
+        if (([string]$confirmation).Trim() -ine 'ДА') {
+            Write-Host 'Установка отменена. Файлы игры не изменены.' -ForegroundColor Yellow
+            exit 2
+        }
+    }
+}
 
 $fileStates = @()
 foreach ($file in $manifest.files) {
     $targetPath = Join-Path $dataPath ([string]$file.relativePath)
     if (-not (Test-Path -LiteralPath $targetPath)) { throw "Отсутствует файл игры: $targetPath" }
     $hash = Get-Sha256 $targetPath
-    if ($hash -ne ([string]$file.baseSha256) -and $hash -ne ([string]$file.targetSha256)) {
-        throw "Неподдерживаемая версия файла $($file.relativePath). Выполните проверку файлов в Epic Games и повторите установку. SHA-256: $hash"
+    $status = if ($hash -eq ([string]$file.baseSha256)) {
+        'Base'
     }
-    $fileStates += [pscustomobject]@{ Manifest = $file; Path = $targetPath; Hash = $hash }
+    elseif ($hash -eq ([string]$file.targetSha256)) {
+        'Target'
+    }
+    else {
+        'Unknown'
+    }
+    if ($status -eq 'Unknown' -and -not $versionMismatch) {
+        throw "Версия игры совпадает с проверенной, но файл изменён или повреждён: $($file.relativePath). Выполните проверку файлов в Epic Games и повторите установку. SHA-256: $hash"
+    }
+    $fileStates += [pscustomobject]@{ Manifest = $file; Path = $targetPath; Hash = $hash; Status = $status }
 }
 
-$needsPatch = @($fileStates | Where-Object { $_.Hash -eq ([string]$_.Manifest.baseSha256) })
+$unsupportedStates = @($fileStates | Where-Object { $_.Status -eq 'Unknown' })
+if ($versionMismatch -and $unsupportedStates.Count -gt 0) {
+    Write-Host 'Для экспериментальной установки будут изменены непроверенные файлы:' -ForegroundColor Yellow
+    foreach ($entry in $unsupportedStates) {
+        Write-Host "  $($entry.Manifest.relativePath)" -ForegroundColor Yellow
+        Write-Host "    SHA-256: $($entry.Hash)" -ForegroundColor DarkYellow
+    }
+    Write-Host ''
+}
+
+$needsPatch = @($fileStates | Where-Object { $_.Status -eq 'Base' -or $_.Status -eq 'Unknown' })
 if ($needsPatch.Count -eq 0) {
     Write-Host "Русификатор $($manifest.installerVersion) уже установлен." -ForegroundColor Green
     exit 0
@@ -160,6 +230,14 @@ $state = [ordered]@{
     ProfilePath = $ProfilePath
     BackupDir = $backupDir
     ProfileAddonExisted = $profileAddonExisted
+    DetectedGameVersion = $detectedGameVersion
+    CompatibilityMode = $versionMismatch
+    UnsupportedFiles = @($unsupportedStates | ForEach-Object {
+        [ordered]@{
+            RelativePath = [string]$_.Manifest.relativePath
+            Sha256 = [string]$_.Hash
+        }
+    })
     OriginalFiles = $originalFiles
     InstalledAt = (Get-Date).ToString('o')
 }
@@ -170,7 +248,11 @@ foreach ($entry in $needsPatch) {
     $deltaPath = Join-Path (Join-Path $scriptRoot 'payload\patches') ([string]$entry.Manifest.patch)
     $tempPath = $entry.Path + '.ssru.tmp'
     Write-Host "Обновление: $relative"
-    Apply-Delta $entry.Path $deltaPath $tempPath ([string]$entry.Manifest.baseSha256) ([string]$entry.Manifest.targetSha256)
+    $allowUnknownBase = $entry.Status -eq 'Unknown'
+    $null = Apply-Delta -SourcePath $entry.Path -DeltaPath $deltaPath -OutputPath $tempPath `
+        -ExpectedBaseSha256 ([string]$entry.Manifest.baseSha256) `
+        -ExpectedTargetSha256 ([string]$entry.Manifest.targetSha256) `
+        -AllowUnknownBase:$allowUnknownBase
     Copy-Item -LiteralPath $tempPath -Destination $entry.Path -Force
     Remove-Item -LiteralPath $tempPath -Force
 }
@@ -184,13 +266,27 @@ if (Test-Path -LiteralPath $addonPath) {
 }
 Copy-Item -LiteralPath $profilePayload -Destination $addonRoot -Recurse -Force
 
+$installedFiles = @()
 foreach ($entry in $fileStates) {
     $actual = Get-Sha256 $entry.Path
-    if ($actual -ne ([string]$entry.Manifest.targetSha256)) {
+    if ($entry.Status -ne 'Unknown' -and $actual -ne ([string]$entry.Manifest.targetSha256)) {
         throw "Проверка после установки не пройдена: $($entry.Manifest.relativePath)"
+    }
+    $installedFiles += [ordered]@{
+        RelativePath = [string]$entry.Manifest.relativePath
+        Sha256 = $actual
+        Verified = $actual -eq ([string]$entry.Manifest.targetSha256)
     }
 }
 
+$state['InstalledFiles'] = $installedFiles
 $state.Status = 'Installed'
 $state | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $statePath -Encoding UTF8
-Write-Host "Русификатор $($manifest.installerVersion) установлен. Резервная копия: $backupDir" -ForegroundColor Green
+if ($versionMismatch) {
+    Write-Host "Русификатор $($manifest.installerVersion) установлен в экспериментальном режиме совместимости." -ForegroundColor Yellow
+    Write-Host 'Если игра вылетает или не запускается, запустите Uninstall.cmd.' -ForegroundColor Yellow
+    Write-Host "Резервная копия: $backupDir" -ForegroundColor Yellow
+}
+else {
+    Write-Host "Русификатор $($manifest.installerVersion) установлен. Резервная копия: $backupDir" -ForegroundColor Green
+}
