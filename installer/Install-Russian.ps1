@@ -32,6 +32,79 @@ function Assert-ChildPath([string]$Parent, [string]$Child) {
     }
 }
 
+function Get-Tutorials([string]$Path) {
+    $parsed = ConvertFrom-Json -InputObject (Get-Content -LiteralPath $Path -Raw -Encoding UTF8)
+    $tutorials = @()
+    foreach ($tutorial in $parsed) { $tutorials += $tutorial }
+    $expectedMultiplicity = if ($tutorials.Count -eq 34) {
+        1
+    }
+    elseif ($tutorials.Count -eq 68) {
+        2
+    }
+    else {
+        throw "Неподдерживаемая структура обучения: $Path ($($tutorials.Count) записей)"
+    }
+
+    foreach ($id in 1..34) {
+        $count = @($tutorials | Where-Object { [int]$_.Id -eq $id }).Count
+        if ($count -ne $expectedMultiplicity) {
+            throw "Неподдерживаемая структура обучения: $Path (Id $id встречается $count раз)"
+        }
+    }
+    return $tutorials
+}
+
+function Get-TutorialReplacements([string]$Path) {
+    $tutorials = Get-Tutorials $Path
+    $replacements = @{}
+    foreach ($id in @(14, 15)) {
+        $matches = @($tutorials | Where-Object { [int]$_.Id -eq $id })
+        if ($matches.Count -ne 1) {
+            throw "В текстовом пакете ожидалась одна запись обучения Id ${id}: $Path"
+        }
+        $replacements[$id] = $matches[0]
+    }
+    return $replacements
+}
+
+function Test-TutorialTranslations([string]$Path, [hashtable]$Replacements) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+    $tutorials = Get-Tutorials $Path
+    foreach ($id in @(14, 15)) {
+        foreach ($tutorial in @($tutorials | Where-Object { [int]$_.Id -eq $id })) {
+            $replacement = $Replacements[$id]
+            if ([string]$tutorial.Name -ne [string]$replacement.Name -or
+                [string]$tutorial.Description -ne [string]$replacement.Description) {
+                return $false
+            }
+        }
+    }
+    return $true
+}
+
+function Update-TutorialTranslations([string]$Path, [hashtable]$Replacements) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+    $tutorials = Get-Tutorials $Path
+    $changed = $false
+    foreach ($id in @(14, 15)) {
+        foreach ($tutorial in @($tutorials | Where-Object { [int]$_.Id -eq $id })) {
+            $replacement = $Replacements[$id]
+            if ([string]$tutorial.Name -ne [string]$replacement.Name -or
+                [string]$tutorial.Description -ne [string]$replacement.Description) {
+                $tutorial.Name = [string]$replacement.Name
+                $tutorial.Description = [string]$replacement.Description
+                $changed = $true
+            }
+        }
+    }
+    if ($changed) {
+        $json = $tutorials | ConvertTo-Json -Depth 100
+        [IO.File]::WriteAllText($Path, $json, (New-Object Text.UTF8Encoding($false)))
+    }
+    return $changed
+}
+
 function Apply-Delta(
     [string]$SourcePath,
     [string]$DeltaPath,
@@ -191,7 +264,24 @@ if ($versionMismatch -and $unsupportedStates.Count -gt 0) {
 }
 
 $needsPatch = @($fileStates | Where-Object { $_.Status -eq 'Base' -or $_.Status -eq 'Unknown' })
-if ($needsPatch.Count -eq 0) {
+$profilePayload = Join-Path $scriptRoot 'payload\profile\Russian'
+if (-not (Test-Path -LiteralPath $profilePayload)) { throw "Отсутствует текстовый пакет: $profilePayload" }
+$referenceTutorialPath = Join-Path $profilePayload 'encyclopaedia\Tutorials.json'
+$tutorialReplacements = Get-TutorialReplacements $referenceTutorialPath
+$addonRoot = Join-Path $ProfilePath 'addon'
+$addonPath = Join-Path $addonRoot 'Russian'
+$addonTutorialPath = Join-Path $addonPath 'encyclopaedia\Tutorials.json'
+$liveTutorialRelativePaths = @('encyclopaedia\Tutorials.json', 'encyclopaedia\Tutorials_import.json')
+$profileNeedsUpdate = -not (Test-TutorialTranslations $addonTutorialPath $tutorialReplacements)
+foreach ($relative in $liveTutorialRelativePaths) {
+    $livePath = Join-Path $ProfilePath $relative
+    if ((Test-Path -LiteralPath $livePath -PathType Leaf) -and
+        -not (Test-TutorialTranslations $livePath $tutorialReplacements)) {
+        $profileNeedsUpdate = $true
+    }
+}
+
+if ($needsPatch.Count -eq 0 -and -not $profileNeedsUpdate) {
     Write-Host "Русификатор $($manifest.installerVersion) уже установлен." -ForegroundColor Green
     exit 0
 }
@@ -200,6 +290,7 @@ $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $backupDir = Join-Path $StateRoot "backup-$timestamp"
 $filesBackupDir = Join-Path $backupDir 'files'
 $profileBackupDir = Join-Path $backupDir 'profile-addon-Russian'
+$profileLiveBackupDir = Join-Path $backupDir 'profile-live'
 New-Item -ItemType Directory -Path $filesBackupDir -Force | Out-Null
 
 $originalFiles = @()
@@ -211,13 +302,25 @@ foreach ($entry in $fileStates) {
     $originalFiles += [pscustomobject]@{ RelativePath = $relative; Sha256 = $entry.Hash }
 }
 
-$addonRoot = Join-Path $ProfilePath 'addon'
-$addonPath = Join-Path $addonRoot 'Russian'
 Assert-ChildPath $ProfilePath $addonPath
 $profileAddonExisted = Test-Path -LiteralPath $addonPath
 if ($profileAddonExisted) {
     New-Item -ItemType Directory -Path (Split-Path -Parent $profileBackupDir) -Force | Out-Null
     Copy-Item -LiteralPath $addonPath -Destination $profileBackupDir -Recurse -Force
+}
+
+$profileLiveFiles = @()
+foreach ($relative in $liveTutorialRelativePaths) {
+    $livePath = Join-Path $ProfilePath $relative
+    Assert-ChildPath $ProfilePath $livePath
+    if (-not (Test-Path -LiteralPath $livePath -PathType Leaf)) { continue }
+    $backupPath = Join-Path $profileLiveBackupDir $relative
+    New-Item -ItemType Directory -Path (Split-Path -Parent $backupPath) -Force | Out-Null
+    Copy-Item -LiteralPath $livePath -Destination $backupPath -Force
+    $profileLiveFiles += [ordered]@{
+        RelativePath = $relative
+        Sha256 = Get-Sha256 $livePath
+    }
 }
 
 New-Item -ItemType Directory -Path $StateRoot -Force | Out-Null
@@ -230,6 +333,7 @@ $state = [ordered]@{
     ProfilePath = $ProfilePath
     BackupDir = $backupDir
     ProfileAddonExisted = $profileAddonExisted
+    ProfileLiveFiles = $profileLiveFiles
     DetectedGameVersion = $detectedGameVersion
     CompatibilityMode = $versionMismatch
     UnsupportedFiles = @($unsupportedStates | ForEach-Object {
@@ -257,14 +361,18 @@ foreach ($entry in $needsPatch) {
     Remove-Item -LiteralPath $tempPath -Force
 }
 
-$profilePayload = Join-Path $scriptRoot 'payload\profile\Russian'
-if (-not (Test-Path -LiteralPath $profilePayload)) { throw "Отсутствует текстовый пакет: $profilePayload" }
 New-Item -ItemType Directory -Path $addonRoot -Force | Out-Null
 if (Test-Path -LiteralPath $addonPath) {
     Assert-ChildPath $ProfilePath $addonPath
     Remove-Item -LiteralPath $addonPath -Recurse -Force
 }
 Copy-Item -LiteralPath $profilePayload -Destination $addonRoot -Recurse -Force
+foreach ($relative in $liveTutorialRelativePaths) {
+    $livePath = Join-Path $ProfilePath $relative
+    if (Update-TutorialTranslations $livePath $tutorialReplacements) {
+        Write-Host "Обновление обучения: $relative"
+    }
+}
 
 $installedFiles = @()
 foreach ($entry in $fileStates) {

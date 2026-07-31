@@ -53,6 +53,20 @@ try {
     [IO.File]::WriteAllBytes($gameAssetPath, $unknownBytes)
     [IO.File]::WriteAllBytes((Join-Path $gameRoot 'Sunless Sea.exe'), [byte[]]@())
     Set-Content -LiteralPath (Join-Path $profilePayload 'test.txt') -Value 'test' -Encoding ASCII
+    $tutorialDirectory = Join-Path $profilePayload 'encyclopaedia'
+    New-Item -ItemType Directory -Path $tutorialDirectory -Force | Out-Null
+    $tutorials = @(1..34 | ForEach-Object {
+        [ordered]@{
+            Id = $_
+            Name = "Tutorial $_"
+            Description = "Description $_"
+        }
+    })
+    $tutorialJson = $tutorials | ConvertTo-Json -Depth 5
+    [IO.File]::WriteAllText(
+        (Join-Path $tutorialDirectory 'Tutorials.json'),
+        $tutorialJson,
+        (New-Object Text.UTF8Encoding($false)))
 
     $deltaPath = Join-Path $patchRoot 'resources.assets.ssdelta'
     dotnet run --project (Join-Path $repoRoot 'src\BinaryDeltaTool\BinaryDeltaTool.csproj') `

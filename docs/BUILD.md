@@ -45,9 +45,9 @@ dotnet .\src\BinaryDeltaTool\bin\Release\net10.0\BinaryDeltaTool.dll `
 
 ```powershell
 .\scripts\New-ReleaseArchive.ps1 `
-  -Version '0.1.1' `
+  -Version '0.1.3' `
   -PayloadPath .\release-input\payload `
-  -ManifestPath .\manifests\installer-v0.1.1.json
+  -ManifestPath .\manifests\installer-v0.1.3.json
 ```
 
 Скрипт запрещает включать в payload целые DLL, Unity assets и исполняемые файлы,

@@ -51,7 +51,25 @@ if ([bool]$state.ProfileAddonExisted) {
     Copy-Item -Path (Join-Path $profileBackupDir '*') -Destination $addonPath -Recurse -Force
 }
 
+if ($null -ne $state.ProfileLiveFiles) {
+    $profileLiveBackupDir = Join-Path ([string]$state.BackupDir) 'profile-live'
+    foreach ($file in @($state.ProfileLiveFiles)) {
+        $relative = [string]$file.RelativePath
+        $backupPath = Join-Path $profileLiveBackupDir $relative
+        $targetPath = Join-Path $profilePath $relative
+        Assert-ChildPath $profilePath $targetPath
+        if (-not (Test-Path -LiteralPath $backupPath -PathType Leaf)) {
+            throw "Отсутствует резервная копия файла профиля: $backupPath"
+        }
+        New-Item -ItemType Directory -Path (Split-Path -Parent $targetPath) -Force | Out-Null
+        Copy-Item -LiteralPath $backupPath -Destination $targetPath -Force
+        if ((Get-Sha256 $targetPath) -ne ([string]$file.Sha256)) {
+            throw "Не удалось восстановить файл профиля: $relative"
+        }
+    }
+}
+
 $state.Status = 'Uninstalled'
 $state | Add-Member -NotePropertyName 'UninstalledAt' -NotePropertyValue ((Get-Date).ToString('o')) -Force
 $state | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $statePath -Encoding UTF8
-Write-Host 'Исходные файлы и предыдущий каталог addon\Russian восстановлены.' -ForegroundColor Green
+Write-Host 'Исходные файлы и предыдущие данные профиля восстановлены.' -ForegroundColor Green

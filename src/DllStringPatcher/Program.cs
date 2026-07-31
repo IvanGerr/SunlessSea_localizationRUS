@@ -91,6 +91,18 @@ if (args.Length >= 3 && args[0] == "--patch-result-messages")
     return;
 }
 
+if (args.Length >= 3 && args[0] == "--patch-pyramid-quality-messages")
+{
+    PatchPyramidQualityMessages(args[1], args[2]);
+    return;
+}
+
+if (args.Length >= 3 && args[0] == "--patch-quality-boundary-messages")
+{
+    PatchQualityBoundaryMessages(args[1], args[2]);
+    return;
+}
+
 if (args.Length >= 3 && args[0] == "--patch-log-date")
 {
     PatchLogDate(args[1], args[2]);
@@ -124,6 +136,12 @@ if (args.Length >= 3 && args[0] == "--patch-shipyard-ui")
 if (args.Length >= 3 && args[0] == "--patch-hud-and-weapon-labels")
 {
     PatchHudAndWeaponLabels(args[1], args[2]);
+    return;
+}
+
+if (args.Length >= 3 && args[0] == "--patch-officer-role-plurals")
+{
+    PatchOfficerRolePlurals(args[1], args[2]);
     return;
 }
 
@@ -726,6 +744,108 @@ static void PatchResultMessages(string inputPath, string outputPath)
     Directory.CreateDirectory(Path.GetDirectoryName(output) ?? ".");
     module.Write(output);
     Console.WriteLine($"Patched {hitCounts.Count} result-message fragments.");
+}
+
+static void PatchPyramidQualityMessages(string inputPath, string outputPath)
+{
+    var input = Path.GetFullPath(inputPath);
+    var output = Path.GetFullPath(outputPath);
+    using var module = ModuleDefinition.ReadModule(input);
+    var type = module.Types.SelectMany(WalkTypes)
+        .Single(candidate => candidate.FullName == "FailBetter.Core.Result.QualityChangeMessages.PyramidQualityChangeMessage");
+    var replacements = new Dictionary<string, (string To, int Expected)>
+    {
+        ["</strong> has increased to "] = ("</strong> — повышено до ", 1),
+        ["My "] = ("Моя характеристика «", 4),
+        [" has increased to "] = ("» повышена до ", 1),
+        ["</strong> has dropped to "] = ("</strong> — снижено до ", 1),
+        [" has dropped to "] = ("» снижена до ", 1),
+        ["</strong> is increasing..."] = ("</strong> — показатель растёт...", 1),
+        [" is increasing..."] = ("» растёт...", 1),
+        ["</strong> is dropping..."] = ("</strong> — показатель снижается...", 1),
+        [" is dropping..."] = ("» снижается...", 1),
+        ["A twist in your tale! You are now <strong>{0}</strong>."] = ("Новый поворот сюжета! <strong>{0}</strong>.", 1),
+        ["A twist in my tale! I am now {0}."] = ("Новый поворот моего сюжета! {0}.", 1),
+        ["You've made a friend, or at least a contact: <strong>{0}</strong>."] = ("У вас появился друг или хотя бы полезная связь: <strong>{0}</strong>.", 1),
+        ["I've made a friend, or at least a contact: {0}."] = ("У меня появился друг или хотя бы полезная связь: {0}.", 1),
+        ["An Accomplishment! You are now <strong>{0}</strong>."] = ("Новое достижение! <strong>{0}</strong>.", 1),
+        ["An Accomplishment! I am now {0}."] = ("Новое достижение! {0}.", 1),
+        ["Begun a new venture! <strong>{0}</strong>"] = ("Начато новое предприятие! <strong>{0}</strong>", 1),
+        ["I have begun a new venture!{0}"] = ("Новое предприятие начато! {0}", 1),
+        ["<strong>{0}</strong> shows your progress in the venture."] = ("<strong>{0}</strong> отражает ваш прогресс в этом предприятии.", 1),
+        ["{0} shows my progress in the venture."] = ("{0} отражает мой прогресс в этом предприятии.", 1),
+        ["Boldly done! You have chosen an Ambition! <strong>{0}</strong>"] = ("Смелый выбор! Вы выбрали цель: <strong>{0}</strong>", 1),
+        ["I have chosen an Ambition! {0}"] = ("Я выбрал цель: {0}", 1),
+        ["You've learnt a new route: <strong>{0}</strong>"] = ("Открыт новый маршрут: <strong>{0}</strong>", 1),
+        ["I've learnt a new route: {0}"] = ("Открыт новый маршрут: {0}", 1),
+        ["You've gained a new quality: <strong>{0}</strong> at {1}"] = ("Получена новая характеристика: <strong>{0}</strong> — {1}", 1),
+        ["I've gained a new quality: {0} at {1}"] = ("Получена новая характеристика: {0} — {1}", 1),
+        ["A twist in your tale! You are no longer <strong>{0}</strong>."] = ("Новый поворот сюжета! Утрачено: <strong>{0}</strong>.", 1),
+        ["A twist in my tale! I am no longer {0}."] = ("Новый поворот моего сюжета! Утрачено: {0}.", 1),
+        ["You've lost a quality: <strong>{0}</strong>."] = ("Утрачена характеристика: <strong>{0}</strong>.", 1),
+        ["I've lost a quality: {0}."] = ("Утрачена характеристика: {0}.", 1),
+        ["You've lost a quality: <strong>{0}</strong>. (but your equipped items still give you an effective level of "] = ("Утрачена характеристика: <strong>{0}</strong>. (Но снаряжение всё ещё даёт эффективный уровень ", 1),
+        ["I've lost a quality: {0}. (but my equipped items still give me an effective level of "] = ("Утрачена характеристика: {0}. (Но снаряжение всё ещё даёт эффективный уровень ", 1),
+    };
+    var counts = replacements.Keys.ToDictionary(value => value, _ => 0);
+
+    foreach (var method in type.Methods.Where(candidate => candidate.HasBody))
+    {
+        foreach (var instruction in method.Body.Instructions)
+        {
+            if (instruction.OpCode.Code != Code.Ldstr || instruction.Operand is not string value ||
+                !replacements.TryGetValue(value, out var replacement))
+                continue;
+            instruction.Operand = replacement.To;
+            counts[value]++;
+        }
+    }
+
+    var invalid = replacements
+        .Where(pair => counts[pair.Key] != pair.Value.Expected)
+        .Select(pair => $"{pair.Key}={counts[pair.Key]}")
+        .ToArray();
+    if (invalid.Length != 0)
+        throw new InvalidDataException("Unexpected pyramid-quality message layout: " + string.Join(", ", invalid));
+
+    Directory.CreateDirectory(Path.GetDirectoryName(output) ?? ".");
+    module.Write(output);
+    Console.WriteLine($"Patched {counts.Values.Sum()} pyramid-quality message fragments.");
+}
+
+static void PatchQualityBoundaryMessages(string inputPath, string outputPath)
+{
+    var input = Path.GetFullPath(inputPath);
+    var output = Path.GetFullPath(outputPath);
+    using var module = ModuleDefinition.ReadModule(input);
+    var type = module.Types.SelectMany(WalkTypes)
+        .Single(candidate => candidate.FullName == "FailBetter.Core.QAssoc.BaseClasses.BaseQEffect");
+    var replacements = new Dictionary<string, string>
+    {
+        [" hasn't changed, because it's higher than "] = " — значение не изменилось, поскольку оно уже выше ",
+        [" hasn't changed, because it's lower than "] = " — значение не изменилось, поскольку оно уже ниже ",
+    };
+    var counts = replacements.Keys.ToDictionary(value => value, _ => 0);
+
+    foreach (var method in type.Methods.Where(candidate => candidate.HasBody))
+    {
+        foreach (var instruction in method.Body.Instructions)
+        {
+            if (instruction.OpCode.Code != Code.Ldstr || instruction.Operand is not string value ||
+                !replacements.TryGetValue(value, out var replacement))
+                continue;
+            instruction.Operand = replacement;
+            counts[value]++;
+        }
+    }
+
+    var invalid = counts.Where(pair => pair.Value != 1).Select(pair => $"{pair.Key}={pair.Value}").ToArray();
+    if (invalid.Length != 0)
+        throw new InvalidDataException("Unexpected quality-boundary message layout: " + string.Join(", ", invalid));
+
+    Directory.CreateDirectory(Path.GetDirectoryName(output) ?? ".");
+    module.Write(output);
+    Console.WriteLine("Patched upper and lower quality-boundary messages.");
 }
 
 static void PatchLogDate(string inputPath, string outputPath)
@@ -1434,6 +1554,77 @@ static void PatchShipyardUi(string inputPath, string outputPath)
     Directory.CreateDirectory(Path.GetDirectoryName(output) ?? ".");
     module.Write(output);
     Console.WriteLine("Disabled English plural suffix for shipyard Echo prices.");
+}
+
+static void PatchOfficerRolePlurals(string inputPath, string outputPath)
+{
+    var input = Path.GetFullPath(inputPath);
+    var output = Path.GetFullPath(outputPath);
+    using var module = ModuleDefinition.ReadModule(input);
+    var allTypes = module.Types.SelectMany(WalkTypes).ToArray();
+    var type = allTypes.Single(candidate => candidate.FullName == "Sunless.Game.UI.Gazetteer.Officers.OfficersGroup");
+    var constructor = type.Methods.Single(candidate => candidate.IsConstructor && candidate.HasBody);
+    const string helperName = "FormatOfficerRolePlural";
+    if (type.Methods.Any(candidate => candidate.Name == helperName))
+        throw new InvalidDataException($"Method {helperName} already exists.");
+
+    const string pluraliseSignature = "System.String Sunless.Game.ExtensionMethods.StringExtensionMethods::Pluralise(System.String)";
+    var pluraliseCalls = constructor.Body.Instructions
+        .Where(instruction =>
+            instruction.OpCode.Code == Code.Call &&
+            instruction.Operand is MethodReference called &&
+            called.FullName == pluraliseSignature)
+        .ToArray();
+    if (pluraliseCalls.Length != 1)
+        throw new InvalidDataException($"Expected one officer-role pluralizer call, found {pluraliseCalls.Length}.");
+
+    const string stringEqualitySignature = "System.Boolean System.String::op_Equality(System.String,System.String)";
+    var stringEquality = allTypes
+        .SelectMany(candidate => candidate.Methods)
+        .Where(method => method.HasBody)
+        .SelectMany(method => method.Body.Instructions)
+        .Select(instruction => instruction.Operand)
+        .OfType<MethodReference>()
+        .First(reference => reference.FullName == stringEqualitySignature);
+    var pluralise = (MethodReference)pluraliseCalls[0].Operand;
+
+    var helper = new MethodDefinition(
+        helperName,
+        MethodAttributes.Private | MethodAttributes.Static | MethodAttributes.HideBySig,
+        module.TypeSystem.String);
+    helper.Parameters.Add(new ParameterDefinition("value", ParameterAttributes.None, module.TypeSystem.String));
+    helper.Body.MaxStackSize = 2;
+    type.Methods.Add(helper);
+    var helperIl = helper.Body.GetILProcessor();
+    var roleNames = new Dictionary<string, string>
+    {
+        ["Старпом"] = "Старпомы",
+        ["Главный инженер"] = "Главные инженеры",
+        ["Кок"] = "Коки",
+        ["Артиллерист"] = "Артиллеристы",
+        ["Судовой врач"] = "Судовые врачи",
+        ["Талисман"] = "Талисманы",
+    };
+    foreach (var (from, to) in roleNames)
+    {
+        var next = Instruction.Create(OpCodes.Nop);
+        helperIl.Append(Instruction.Create(OpCodes.Ldarg_0));
+        helperIl.Append(Instruction.Create(OpCodes.Ldstr, from));
+        helperIl.Append(Instruction.Create(OpCodes.Call, stringEquality));
+        helperIl.Append(Instruction.Create(OpCodes.Brfalse, next));
+        helperIl.Append(Instruction.Create(OpCodes.Ldstr, to));
+        helperIl.Append(Instruction.Create(OpCodes.Ret));
+        helperIl.Append(next);
+    }
+    helperIl.Append(Instruction.Create(OpCodes.Ldarg_0));
+    helperIl.Append(Instruction.Create(OpCodes.Call, pluralise));
+    helperIl.Append(Instruction.Create(OpCodes.Ret));
+
+    pluraliseCalls[0].Operand = helper;
+
+    Directory.CreateDirectory(Path.GetDirectoryName(output) ?? ".");
+    module.Write(output);
+    Console.WriteLine("Patched Russian officer-role plurals in the available-officers list.");
 }
 
 static void PatchHudAndWeaponLabels(string inputPath, string outputPath)

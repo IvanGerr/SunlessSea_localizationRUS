@@ -44,6 +44,7 @@ try {
     }
     $packageRoot = $packageDirectories[0].FullName
     $manifest = Get-Content -LiteralPath (Join-Path $packageRoot 'manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    $payloadProfile = Join-Path $packageRoot 'payload\profile\Russian'
 
     $checksumPath = Join-Path $packageRoot 'FILES.sha256'
     $checksumLines = @(Get-Content -LiteralPath $checksumPath -Encoding ASCII | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
@@ -74,6 +75,33 @@ try {
     $previousAddon = Join-Path $profileRoot 'addon\Russian'
     New-Item -ItemType Directory -Path $previousAddon -Force | Out-Null
     Set-Content -LiteralPath (Join-Path $previousAddon 'marker.txt') -Value 'previous-profile' -Encoding ASCII
+    $liveTutorialRoot = Join-Path $profileRoot 'encyclopaedia'
+    New-Item -ItemType Directory -Path $liveTutorialRoot -Force | Out-Null
+    $tutorialSourceJson = Get-Content -LiteralPath (Join-Path $payloadProfile 'encyclopaedia\Tutorials.json') -Raw -Encoding UTF8
+    $parsedTutorials = ConvertFrom-Json -InputObject $tutorialSourceJson
+    $liveTutorials34 = @()
+    foreach ($tutorial in $parsedTutorials) { $liveTutorials34 += $tutorial }
+    foreach ($tutorial in @($liveTutorials34 | Where-Object { [int]$_.Id -in @(14, 15) })) {
+        $tutorial.Name = 'Zee-bat'
+        $tutorial.Description = 'Untranslated tutorial fixture.'
+    }
+    $liveTutorials68 = @()
+    foreach ($copy in 1..2) {
+        $parsedCopy = ConvertFrom-Json -InputObject ($liveTutorials34 | ConvertTo-Json -Depth 100)
+        foreach ($tutorial in $parsedCopy) { $liveTutorials68 += $tutorial }
+    }
+    $liveTutorialPath = Join-Path $liveTutorialRoot 'Tutorials.json'
+    $liveImportPath = Join-Path $liveTutorialRoot 'Tutorials_import.json'
+    [IO.File]::WriteAllText(
+        $liveTutorialPath,
+        ($liveTutorials68 | ConvertTo-Json -Depth 100),
+        (New-Object Text.UTF8Encoding($false)))
+    [IO.File]::WriteAllText(
+        $liveImportPath,
+        ($liveTutorials34 | ConvertTo-Json -Depth 100),
+        (New-Object Text.UTF8Encoding($false)))
+    $originalLiveTutorialHash = Get-Sha256 $liveTutorialPath
+    $originalLiveImportHash = Get-Sha256 $liveImportPath
     $stateRoot = Join-Path $testRoot 'state'
 
     $installerPath = Join-Path $packageRoot 'Install-Russian.ps1'
@@ -96,7 +124,6 @@ try {
         throw 'Unexpected state after supported installation.'
     }
 
-    $payloadProfile = Join-Path $packageRoot 'payload\profile\Russian'
     $installedProfile = Join-Path $profileRoot 'addon\Russian'
     $payloadFiles = @(Get-ChildItem -LiteralPath $payloadProfile -Recurse -File)
     $installedFiles = @(Get-ChildItem -LiteralPath $installedProfile -Recurse -File)
@@ -111,6 +138,28 @@ try {
         }
         if ((Get-Sha256 $file.FullName) -ne (Get-Sha256 $installedPath)) {
             throw "Installed profile hash mismatch: $relative"
+        }
+    }
+
+    $parsedReferenceTutorials = ConvertFrom-Json -InputObject (Get-Content -LiteralPath (Join-Path $payloadProfile 'encyclopaedia\Tutorials.json') -Raw -Encoding UTF8)
+    $referenceTutorials = @()
+    foreach ($tutorial in $parsedReferenceTutorials) { $referenceTutorials += $tutorial }
+    foreach ($livePath in @($liveTutorialPath, $liveImportPath)) {
+        $parsedLiveTutorials = ConvertFrom-Json -InputObject (Get-Content -LiteralPath $livePath -Raw -Encoding UTF8)
+        $liveTutorials = @()
+        foreach ($tutorial in $parsedLiveTutorials) { $liveTutorials += $tutorial }
+        foreach ($id in @(14, 15)) {
+            $expectedMatches = @($referenceTutorials | Where-Object { [int]$_.Id -eq $id })
+            if ($expectedMatches.Count -ne 1) {
+                throw "Expected one reference tutorial $id."
+            }
+            $expected = $expectedMatches[0]
+            foreach ($actual in @($liveTutorials | Where-Object { [int]$_.Id -eq $id })) {
+                if ([string]$actual.Name -ne [string]$expected.Name -or
+                    [string]$actual.Description -ne [string]$expected.Description) {
+                    throw "Live tutorial $id was not translated: $livePath"
+                }
+            }
         }
     }
 
@@ -129,6 +178,10 @@ try {
     if (-not (Test-Path -LiteralPath (Join-Path $previousAddon 'marker.txt'))) {
         throw 'Previous profile was not restored.'
     }
+    if ((Get-Sha256 $liveTutorialPath) -ne $originalLiveTutorialHash -or
+        (Get-Sha256 $liveImportPath) -ne $originalLiveImportHash) {
+        throw 'Previous live tutorial files were not restored.'
+    }
 
     $passed = $true
     [pscustomobject]@{
@@ -140,6 +193,8 @@ try {
         InstallVerified = $true
         SecondInstallVerified = $true
         UninstallVerified = $true
+        LiveTutorialInstallVerified = $true
+        LiveTutorialRestoreVerified = $true
     } | ConvertTo-Json -Compress
 }
 finally {
