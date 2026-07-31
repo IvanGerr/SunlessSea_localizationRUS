@@ -1,0 +1,36 @@
+{
+  "installerVersion": "0.1.2",
+  "gameVersion": "2.2.12.202509090925-Windows",
+  "files": [
+    {
+      "relativePath": "resources.assets",
+      "patch": "resources.assets.ssdelta",
+      "baseSha256": "68B02C9902B27A335221B9D422433E31AAD2415074607C4CB9B1761E57641E75",
+      "targetSha256": "CE20777BF0005500C08149A8988926443E9B719B356430E4A5341D17C46A09F5"
+    },
+    {
+      "relativePath": "resources.assets.resS",
+      "patch": "resources.assets.resS.ssdelta",
+      "baseSha256": "ABC4AF4ED798B21BEDF479C62F12F188BF87743AB9D1F5EB1837A202895C3EC1",
+      "targetSha256": "D3A7009C98FBDBEA83951EF78E311FD45802D3D27DDF9C7F50FDE4CF656F02F1"
+    },
+    {
+      "relativePath": "sharedassets0.assets",
+      "patch": "sharedassets0.assets.ssdelta",
+      "baseSha256": "47069170E5DE96E697B5786992CEA4885126FA30A40ECFD6D224F9544C7568B4",
+      "targetSha256": "1D36F6BACDCEA1BC44965DB0058F57324680F9270E2769C9791C2750AD93214C"
+    },
+    {
+      "relativePath": "Managed\\Sunless.Game.dll",
+      "patch": "Sunless.Game.dll.ssdelta",
+      "baseSha256": "0823BD64B1A3975BF1CFEF87C0808978ACFD0F04B2227C75750D7C90CCB3E790",
+      "targetSha256": "D2212631BB35B67EF6FD1C5D8F094DC62B6D8F18EF0AF1DC814CE594E3C01C24"
+    },
+    {
+      "relativePath": "Managed\\Failbetter.Core.dll",
+      "patch": "Failbetter.Core.dll.ssdelta",
+      "baseSha256": "66925ED678E8387219E29A85A01BA6980B7C17436DF1DB947EE641AF3A8796ED",
+      "targetSha256": "7AD93BCEAC9E46F4F47044EBEFA59A50930C20B82DF1656EBB58CFED4CB34BF9"
+    }
+  ]
+}
