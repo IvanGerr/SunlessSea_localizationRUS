@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/AssetTextPatcher/AssetTextPatcher.csproj" />
+    <Project Path="src/BinaryDeltaTool/BinaryDeltaTool.csproj" />
+    <Project Path="src/DllStringPatcher/DllStringPatcher.csproj" />
+    <Project Path="src/JsonQualityPatcher/JsonQualityPatcher.csproj" />
+    <Project Path="src/JsonTutorialPatcher/JsonTutorialPatcher.csproj" />
+  </Folder>
+</Solution>
