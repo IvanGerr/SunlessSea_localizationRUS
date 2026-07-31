@@ -61,4 +61,3 @@ dotnet build .\SunlessSea.Localization.slnx -c Release
 Проект не связан с Failbetter Games. Sunless Sea, Zubmariner, графика и
 сюжетные материалы принадлежат их правообладателям. Сведения об источниках
 перевода и границах лицензии приведены в [NOTICE.md](NOTICE.md).
-
